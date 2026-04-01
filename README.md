@@ -2,7 +2,7 @@
 
 > **Observabilidade de produção completa** — métricas, logs e alertas para uma aplicação Flask containerizada, seguindo práticas SRE reais.
 
-![CI](https://github.com/your-org/flask-observability/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/devcarlosfigueiredo/Flask-Observability-Stack/actions/workflows/ci.yml/badge.svg)](https://github.com/devcarlosfigueiredo/Flask-Observability-Stack/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
