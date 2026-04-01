@@ -1,0 +1,227 @@
+name: CI — Observability Stack Validation
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # ─── Job 1: Lint & Unit Tests ──────────────────────────────────────────────
+  test:
+    name: 🧪 Unit Tests & Linting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=70 \
+            -v
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ─── Job 2: Docker Build ───────────────────────────────────────────────────
+  docker-build:
+    name: 🐳 Docker Build
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: flask-observability-app:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          target: runtime
+
+      - name: Run container security scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-observability-app:${{ github.sha }}
+          format: table
+          exit-code: 0           # Don't fail on vulnerabilities (informational)
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+  # ─── Job 3: Config Validation ─────────────────────────────────────────────
+  validate-configs:
+    name: ✅ Validate Monitoring Configs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Validate Prometheus config & alert rules
+      - name: Validate Prometheus config
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.52.0 \
+            promtool check config /etc/prometheus/prometheus.yml
+
+      - name: Validate Alert Rules
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.52.0 \
+            promtool check rules /etc/prometheus/alert.rules.yml
+
+      # Validate YAML files (Loki, Promtail, Alertmanager)
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint YAML configs
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 200}, truthy: disable}}" \
+            monitoring/prometheus/prometheus.yml \
+            monitoring/prometheus/alert.rules.yml \
+            monitoring/loki/loki-config.yml \
+            monitoring/promtail/promtail-config.yml \
+            monitoring/alertmanager/alertmanager.yml \
+            docker-compose.yml
+
+      # Validate Docker Compose
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          echo "✅ Docker Compose config is valid"
+
+  # ─── Job 4: Integration Test ───────────────────────────────────────────────
+  integration:
+    name: 🔗 Integration Test — Stack Smoke Test
+    runs-on: ubuntu-latest
+    needs: [docker-build, validate-configs]
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      - name: Start stack
+        run: |
+          docker compose up -d --build
+          echo "Waiting for services to be healthy..."
+
+      - name: Wait for Flask app
+        run: |
+          timeout 60 bash -c 'until curl -sf http://localhost:5000/health; do sleep 2; done'
+          echo "✅ Flask app is healthy"
+
+      - name: Wait for Prometheus
+        run: |
+          timeout 90 bash -c 'until curl -sf http://localhost:9090/-/healthy; do sleep 3; done'
+          echo "✅ Prometheus is healthy"
+
+      - name: Wait for Grafana
+        run: |
+          timeout 90 bash -c 'until curl -sf http://localhost:3000/api/health; do sleep 3; done'
+          echo "✅ Grafana is healthy"
+
+      - name: Smoke test Flask endpoints
+        run: |
+          curl -sf http://localhost:5000/health | jq .
+          curl -sf http://localhost:5000/api/products | jq .total
+          curl -sf http://localhost:5000/api/orders | jq .
+          curl -sf http://localhost:5000/metrics | grep "http_requests_total"
+          echo "✅ All Flask endpoints responding correctly"
+
+      - name: Verify Prometheus is scraping Flask
+        run: |
+          sleep 20  # Wait for at least 1 scrape cycle
+          STATUS=$(curl -sf "http://localhost:9090/api/v1/targets" | jq -r '.data.activeTargets[] | select(.labels.job=="flask-app") | .health')
+          if [ "$STATUS" = "up" ]; then
+            echo "✅ Prometheus is successfully scraping flask-app"
+          else
+            echo "❌ Prometheus target flask-app is not up (status: $STATUS)"
+            exit 1
+          fi
+
+      - name: Verify metrics are queryable
+        run: |
+          RESULT=$(curl -sf "http://localhost:9090/api/v1/query?query=http_requests_total" | jq '.data.result | length')
+          if [ "$RESULT" -gt 0 ]; then
+            echo "✅ http_requests_total metric found with $RESULT series"
+          else
+            echo "❌ No http_requests_total metric found in Prometheus"
+            exit 1
+          fi
+
+      - name: Verify Grafana datasources are configured
+        run: |
+          SOURCES=$(curl -sf -u admin:observability2024 http://localhost:3000/api/datasources | jq 'length')
+          echo "✅ Grafana has $SOURCES datasource(s) configured"
+          if [ "$SOURCES" -lt 2 ]; then
+            echo "❌ Expected at least 2 datasources (Prometheus + Loki)"
+            exit 1
+          fi
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --tail=50
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  # ─── Job 5: Summary ────────────────────────────────────────────────────────
+  summary:
+    name: 📋 Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [test, docker-build, validate-configs, integration]
+    if: always()
+
+    steps:
+      - name: Report status
+        run: |
+          echo "## Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Build | ${{ needs.docker-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config Validation | ${{ needs.validate-configs.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration Tests | ${{ needs.integration.result }} |" >> $GITHUB_STEP_SUMMARY

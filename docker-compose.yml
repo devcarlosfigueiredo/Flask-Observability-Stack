@@ -1,0 +1,204 @@
+version: "3.8"
+
+# ─── Shared logging config ────────────────────────────────────────────────────
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  alertmanager_data:
+
+# ─── Services ─────────────────────────────────────────────────────────────────
+services:
+
+  # ── Flask Application ────────────────────────────────────────────────────
+  flask-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: flask-app
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      PORT: 5000
+    ports:
+      - "${APP_PORT:-5000}:5000"
+    networks:
+      - observability
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "prometheus.scrape=true"
+      - "prometheus.port=5000"
+      - "prometheus.path=/metrics"
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}"
+      - "--storage.tsdb.retention.size=5GB"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - observability
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      flask-app:
+        condition: service_healthy
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-observability2024}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_DOMAIN: localhost
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ALERTING_ENABLED: "true"
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+      GF_LOG_LEVEL: warn
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - observability
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - prometheus
+      - loki
+
+  # ── Loki ─────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    networks:
+      - observability
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Promtail ─────────────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - observability
+    logging: *default-logging
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  # ── Alertmanager ─────────────────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.external-url=http://localhost:${ALERTMANAGER_PORT:-9093}"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    networks:
+      - observability
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Webhook receiver (simulate alert notifications) ───────────────────────
+  webhook-receiver:
+    image: python:3.12-slim
+    container_name: webhook-receiver
+    restart: unless-stopped
+    command: >
+      python -c "
+      from http.server import HTTPServer, BaseHTTPRequestHandler
+      import json, sys
+      class Handler(BaseHTTPRequestHandler):
+          def do_POST(self):
+              length = int(self.headers.get('Content-Length', 0))
+              body = self.rfile.read(length).decode()
+              try:
+                  data = json.loads(body)
+                  print(f'[ALERT] Received {len(data.get(\"alerts\",[]))} alert(s)', flush=True)
+                  for a in data.get('alerts', []):
+                      print(f'  → {a[\"status\"].upper()}: {a[\"labels\"].get(\"alertname\",\"?\")} | {a[\"annotations\"].get(\"summary\",\"\")}', flush=True)
+              except: print(f'Raw: {body}', flush=True)
+              self.send_response(200); self.end_headers()
+          def log_message(self, *a): pass
+      HTTPServer(('0.0.0.0', 5001), Handler).serve_forever()
+      "
+    ports:
+      - "${WEBHOOK_PORT:-5001}:5001"
+    networks:
+      - observability
+    logging: *default-logging

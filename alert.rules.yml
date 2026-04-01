@@ -1,0 +1,174 @@
+# ─── Alert Rules ──────────────────────────────────────────────────────────────
+# Philosophy: alert on SYMPTOMS (user impact), not causes.
+# Reference: Google SRE Book, Chapter 6 — Monitoring Distributed Systems
+# ──────────────────────────────────────────────────────────────────────────────
+
+groups:
+
+  # ── Availability SLO: 99.5% uptime ────────────────────────────────────────
+  - name: availability
+    rules:
+
+      # SLI: Is the app responding to requests?
+      - alert: AppDown
+        expr: up{job="flask-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: availability
+          team: backend
+        annotations:
+          summary: "Flask application is DOWN"
+          description: "The flask-app target has been unreachable for more than 1 minute. Incident response required immediately."
+          runbook: "https://wiki.internal/runbooks/flask-app-down"
+          dashboard: "http://grafana:3000/d/flask-overview"
+
+      # SLI: Is the /health endpoint responding OK?
+      - alert: HealthCheckFailing
+        expr: |
+          rate(http_requests_total{endpoint="health", status=~"5.."}[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Health check endpoint returning 5xx errors"
+          description: "The /health endpoint has been returning errors for 2+ minutes. Possible application degradation."
+
+  # ── Latency SLO: p99 < 500ms ───────────────────────────────────────────────
+  - name: latency
+    rules:
+
+      # p99 latency exceeds SLO threshold
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="flask-app"}[5m]))
+            by (le, endpoint)
+          ) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "p99 latency above 500ms SLO on {{ $labels.endpoint }}"
+          description: "The p99 latency on endpoint '{{ $labels.endpoint }}' is {{ $value | humanizeDuration }}, exceeding the 500ms SLO for 3+ minutes."
+          runbook: "https://wiki.internal/runbooks/high-latency"
+
+      # Critical: p99 > 1s (2x SLO breach)
+      - alert: CriticalLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="flask-app"}[5m]))
+            by (le, endpoint)
+          ) > 1.0
+        for: 2m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "CRITICAL: p99 latency above 1s on {{ $labels.endpoint }}"
+          description: "p99 latency on '{{ $labels.endpoint }}' is {{ $value | humanizeDuration }}. This is 2x the SLO — user experience severely degraded."
+
+  # ── Error Rate SLO: < 1% errors ───────────────────────────────────────────
+  - name: error_rate
+    rules:
+
+      # Warning: error rate > 1%
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="flask-app", status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="flask-app"}[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          slo: error_rate
+        annotations:
+          summary: "Error rate above 1% SLO"
+          description: "Current error rate is {{ $value | humanizePercentage }}. SLO target is < 1%. Error budget is being consumed."
+
+      # Critical: error rate > 5% (burning through budget fast)
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="flask-app", status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="flask-app"}[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          slo: error_rate
+        annotations:
+          summary: "CRITICAL: Error rate above 5%"
+          description: "Error rate is {{ $value | humanizePercentage }}. At this burn rate, the monthly error budget will be exhausted in hours."
+          runbook: "https://wiki.internal/runbooks/high-error-rate"
+
+  # ── Traffic / Saturation ───────────────────────────────────────────────────
+  - name: saturation
+    rules:
+
+      # Unusual traffic drop (possible upstream failure or DNS issue)
+      - alert: TrafficDropped
+        expr: |
+          (
+            sum(rate(http_requests_total{job="flask-app"}[5m]))
+            <
+            sum(rate(http_requests_total{job="flask-app"}[30m] offset 5m)) * 0.5
+          )
+          and
+          sum(rate(http_requests_total{job="flask-app"}[30m] offset 5m)) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Traffic dropped by more than 50%"
+          description: "Request rate has dropped by more than 50% compared to 30 minutes ago. Possible upstream failure or deployment issue."
+
+      # Too many active requests — possible request pile-up
+      - alert: TooManyActiveRequests
+        expr: http_active_requests{job="flask-app"} > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual number of active requests: {{ $value }}"
+          description: "More than 50 requests in flight simultaneously. Possible slow upstream dependency causing request pile-up."
+
+  # ── SLO Error Budget ──────────────────────────────────────────────────────
+  - name: error_budget
+    rules:
+
+      # Record rules for error budget tracking
+      - record: job:slo_availability:ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{job="flask-app", status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="flask-app"}[5m]))
+          )
+
+      - record: job:slo_availability:ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{job="flask-app", status=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="flask-app"}[1h]))
+          )
+
+      # Alert when error budget burn rate is 5x target over 1h window
+      - alert: ErrorBudgetBurnRateHigh
+        expr: |
+          (
+            1 - job:slo_availability:ratio_rate1h
+          ) > (1 - 0.995) * 5
+        for: 10m
+        labels:
+          severity: warning
+          slo: error_budget
+        annotations:
+          summary: "Error budget burning at 5x rate"
+          description: "The error budget is being consumed 5x faster than the SLO allows. At this rate, the monthly budget will be exhausted in ~6 days."

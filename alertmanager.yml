@@ -1,0 +1,109 @@
+# ─── Alertmanager Configuration ───────────────────────────────────────────────
+# Handles routing, grouping, inhibition and silencing of alerts.
+# Reference: https://prometheus.io/docs/alerting/latest/configuration/
+
+global:
+  # How long to wait before resending a resolved alert
+  resolve_timeout: 5m
+
+  # SMTP settings (uncomment and fill to enable email)
+  # smtp_smarthost: "${SMTP_HOST}"
+  # smtp_from: "${SMTP_FROM}"
+  # smtp_auth_username: "${SMTP_USER}"
+  # smtp_auth_password: "${SMTP_PASSWORD}"
+  # smtp_require_tls: true
+
+# ─── Templates ────────────────────────────────────────────────────────────────
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ─── Route tree ───────────────────────────────────────────────────────────────
+# Root route — catches everything not matched by children
+route:
+  receiver: webhook-default
+  group_by: ["alertname", "slo", "team"]
+  group_wait: 30s         # Wait before sending first notification (group window)
+  group_interval: 5m      # Wait before sending next notification for same group
+  repeat_interval: 4h     # Re-notify if alert is still firing
+
+  routes:
+    # Critical alerts — immediate notification, no grouping delay
+    - match:
+        severity: critical
+      receiver: webhook-critical
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true       # Also send to default receiver
+
+    # SLO-related alerts — route to dedicated SLO channel
+    - match:
+        slo: error_budget
+      receiver: webhook-slo
+      group_wait: 1m
+      repeat_interval: 6h
+
+    # Latency SLO alerts
+    - match:
+        slo: latency
+      receiver: webhook-default
+      group_wait: 30s
+
+    # Suppress non-critical alerts during business hours only
+    # (comment out if running 24/7 on-call)
+    - match:
+        severity: warning
+      receiver: webhook-default
+      repeat_interval: 6h
+
+# ─── Inhibit rules ────────────────────────────────────────────────────────────
+# Suppress lower-severity alerts when critical ones are firing for same service
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["alertname", "job"]
+
+  # If app is down, suppress latency and error rate alerts (they're symptoms)
+  - source_match:
+      alertname: AppDown
+    target_match_re:
+      alertname: "(HighLatencyP99|HighErrorRate|CriticalLatencyP99|CriticalErrorRate)"
+    equal: ["job"]
+
+# ─── Receivers ────────────────────────────────────────────────────────────────
+receivers:
+
+  # Default webhook — goes to the webhook-receiver container
+  - name: webhook-default
+    webhook_configs:
+      - url: "http://webhook-receiver:5001/"
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+        max_alerts: 20
+
+  # Critical alerts — same webhook, but could point to PagerDuty, Slack, etc.
+  - name: webhook-critical
+    webhook_configs:
+      - url: "http://webhook-receiver:5001/"
+        send_resolved: true
+        max_alerts: 5
+
+  # SLO channel
+  - name: webhook-slo
+    webhook_configs:
+      - url: "http://webhook-receiver:5001/"
+        send_resolved: true
+
+  # Email receiver (uncomment and configure SMTP above to use)
+  # - name: email-oncall
+  #   email_configs:
+  #     - to: "${ALERT_EMAIL_TO}"
+  #       send_resolved: true
+  #       html: |
+  #         <b>Alert:</b> {{ .GroupLabels.alertname }}<br>
+  #         <b>Severity:</b> {{ .GroupLabels.severity }}<br>
+  #         {{ range .Alerts }}
+  #         <b>Summary:</b> {{ .Annotations.summary }}<br>
+  #         {{ end }}

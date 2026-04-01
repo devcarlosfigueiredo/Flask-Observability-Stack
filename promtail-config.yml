@@ -1,0 +1,90 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+# ─── Loki push target ─────────────────────────────────────────────────────────
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: dev
+    batchwait: 1s
+    batchsize: 1048576  # 1MB
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+# ─── Scrape configs ───────────────────────────────────────────────────────────
+scrape_configs:
+
+  # Collect logs from all Docker containers via json-file log driver
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: status
+            values: ["running"]
+
+    relabel_configs:
+      # Use container name as job label
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+
+      # Add image name
+      - source_labels: ["__meta_docker_container_image"]
+        target_label: "image"
+
+      # Add compose service name
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: "service"
+
+      # Add compose project
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: "project"
+
+      # Drop containers with no name (edge case)
+      - source_labels: ["container"]
+        regex: ""
+        action: drop
+
+    pipeline_stages:
+      # Parse JSON logs (Gunicorn access logs come as JSON)
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            method: method
+            endpoint: endpoint
+            status: status
+            latency_ms: latency_ms
+
+      # Map log level to Loki severity label
+      - labels:
+          level:
+          service:
+          container:
+
+      # Drop healthcheck noise (too frequent, low value)
+      - drop:
+          expression: ".*GET /health.*"
+
+      - drop:
+          expression: ".*GET /metrics.*"
+
+      # Tag slow requests for easier filtering
+      - template:
+          source: latency_ms
+          template: '{{ if gt (toFloat64 .Value) 500.0 }}slow{{ else }}fast{{ end }}'
+
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - "2006-01-02T15:04:05"

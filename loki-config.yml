@@ -1,0 +1,85 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+# ─── Ingester ─────────────────────────────────────────────────────────────────
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 5m
+  chunk_retain_period: 30s
+  max_transfer_retries: 0
+  wal:
+    dir: /loki/wal
+
+# ─── Schema ───────────────────────────────────────────────────────────────────
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# ─── Storage ──────────────────────────────────────────────────────────────────
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/index_cache
+    cache_ttl: 24h
+  filesystem:
+    directory: /loki/chunks
+
+# ─── Limits / Retention ───────────────────────────────────────────────────────
+limits_config:
+  retention_period: 168h          # 7 days — log retention policy
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  max_query_series: 5000
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  split_queries_by_interval: 24h
+
+# ─── Compactor (handles retention) ───────────────────────────────────────────
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+
+# ─── Query range ─────────────────────────────────────────────────────────────
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+# ─── Common ──────────────────────────────────────────────────────────────────
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+# ─── Table manager ───────────────────────────────────────────────────────────
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 168h

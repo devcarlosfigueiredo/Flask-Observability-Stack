@@ -1,0 +1,59 @@
+# ─── Global configuration ─────────────────────────────────────────────────────
+global:
+  scrape_interval: 15s          # How often to scrape targets
+  evaluation_interval: 15s      # How often to evaluate rules
+  scrape_timeout: 10s
+
+  external_labels:
+    cluster: "local-dev"
+    env: "production"
+
+# ─── Alert rules files ────────────────────────────────────────────────────────
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+# ─── Alertmanager ─────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      timeout: 10s
+
+# ─── Scrape configurations ────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # Flask application — main target
+  - job_name: "flask-app"
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["flask-app:5000"]
+        labels:
+          service: "flask-app"
+          team: "backend"
+    # Relabeling: add useful metadata
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "([^:]+)(?::\\d+)?"
+        target_label: host
+        replacement: "${1}"
+
+  # Alertmanager self-monitoring
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  # Grafana self-monitoring
+  - job_name: "grafana"
+    static_configs:
+      - targets: ["grafana:3000"]
+    metrics_path: /metrics

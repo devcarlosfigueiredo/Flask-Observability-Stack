@@ -1,0 +1,555 @@
+{
+  "id": null,
+  "uid": "flask-observability-main",
+  "title": "Flask App — Observability Overview",
+  "description": "RED metrics (Rate, Errors, Duration) + SLO tracking for the Flask application. Mirrors production-grade SRE dashboards.",
+  "tags": ["flask", "slo", "red-metrics", "observability"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "15s", "30s", "1m", "5m"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d"]
+  },
+  "links": [
+    {
+      "title": "Prometheus Targets",
+      "url": "http://localhost:9090/targets",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "title": "Alertmanager",
+      "url": "http://localhost:9093",
+      "type": "link",
+      "icon": "bell",
+      "targetBlank": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "🟢 SLO Status",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Availability SLO (target: 99.5%)",
+      "description": "Percentage of requests that returned non-5xx responses in the last 24h.",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.99 },
+              { "color": "green", "value": 0.995 }
+            ]
+          },
+          "mappings": [],
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "1 - (sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[24h])) / sum(rate(http_requests_total{job=\"flask-app\"}[24h])))",
+          "legendFormat": "Availability",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error Rate (last 5m)",
+      "description": "Percentage of requests returning 5xx errors.",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"flask-app\"}[5m]))",
+          "legendFormat": "Error Rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p99 Latency (last 5m)",
+      "description": "99th percentile response time. SLO target: < 500ms.",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.3 },
+              { "color": "red", "value": 0.5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"flask-app\"}[5m])) by (le))",
+          "legendFormat": "p99 Latency",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Request Rate (RPS)",
+      "description": "Requests per second across all endpoints.",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\"}[5m]))",
+          "legendFormat": "RPS",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "📈 Traffic — Request Rate",
+      "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "HTTP Request Rate by Endpoint",
+      "description": "Requests per second broken down by endpoint. Use to identify traffic patterns and anomalies.",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": false
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\"}[1m])) by (endpoint)",
+          "legendFormat": "{{ endpoint }}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "HTTP Request Rate by Status Code",
+      "description": "2xx (success), 4xx (client errors), 5xx (server errors). Watch for 5xx spikes.",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "5xx" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "4xx" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "2xx" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"2..\"}[1m]))",
+          "legendFormat": "2xx",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"4..\"}[1m]))",
+          "legendFormat": "4xx",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[1m]))",
+          "legendFormat": "5xx",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "⏱️ Duration — Latency",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Request Latency Percentiles (p50, p95, p99)",
+      "description": "Latency distribution over time. p99 should stay below 500ms (SLO). A growing gap between p50 and p99 indicates tail latency issues.",
+      "gridPos": { "x": 0, "y": 15, "w": 16, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 5 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "p99" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "custom.lineWidth", "value": 3 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p50" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"flask-app\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"flask-app\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"flask-app\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Active In-Flight Requests",
+      "description": "Number of requests currently being processed. Sustained high values may indicate slow upstream dependencies.",
+      "gridPos": { "x": 16, "y": 15, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 25 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "http_active_requests{job=\"flask-app\"}",
+          "legendFormat": "Active Requests",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "❌ Errors — Error Rate",
+      "gridPos": { "x": 0, "y": 23, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Error Rate % by Endpoint",
+      "description": "Percentage of requests returning 5xx per endpoint. SLO: overall < 1%. Drill down here when overall error rate is elevated.",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[5m])) by (endpoint) / sum(rate(http_requests_total{job=\"flask-app\"}[5m])) by (endpoint)",
+          "legendFormat": "{{ endpoint }}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Error Budget Burn Rate (1h window)",
+      "description": "How fast are we consuming the error budget? 1.0 = burning at exactly the SLO rate. > 1.0 = over budget. Target: stay below 1.0.",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "(sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[1h])) / sum(rate(http_requests_total{job=\"flask-app\"}[1h]))) / (1 - 0.995)",
+          "legendFormat": "Burn Rate (1h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "🏷️ Endpoint Detail",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "table",
+      "title": "Endpoint Summary — Rate, Errors, Duration",
+      "description": "RED metrics table per endpoint. Sort by Error Rate or p99 to find the worst offenders.",
+      "gridPos": { "x": 0, "y": 33, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Error Rate" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 0.01 },
+                    { "color": "red", "value": 0.05 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p99 Latency" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 0.3 },
+                    { "color": "red", "value": 0.5 }
+                  ]
+                }
+              },
+              { "id": "custom.displayMode", "value": "color-background" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "RPS" },
+            "properties": [{ "id": "unit", "value": "reqps" }]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "p99 Latency", "desc": true }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\"}[5m])) by (endpoint)",
+          "legendFormat": "{{ endpoint }}",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "sum(rate(http_requests_total{job=\"flask-app\", status=~\"5..\"}[5m])) by (endpoint) / sum(rate(http_requests_total{job=\"flask-app\"}[5m])) by (endpoint)",
+          "legendFormat": "{{ endpoint }}",
+          "refId": "B",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-uid" },
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"flask-app\"}[5m])) by (le, endpoint))",
+          "legendFormat": "{{ endpoint }}",
+          "refId": "C",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #A": "RPS",
+              "Value #B": "Error Rate",
+              "Value #C": "p99 Latency"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
